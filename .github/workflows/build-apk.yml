@@ -1,0 +1,124 @@
+name: APK 만들기
+on:
+  push:
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: '17' }
+      - uses: actions/setup-node@v4
+        with: { node-version: '20' }
+      - uses: gradle/actions/setup-gradle@v4
+        with: { gradle-version: '8.7' }
+      - name: 안드로이드 앱 만들기
+        run: |
+          HTML=$(ls *.html | head -1)
+          echo "게임 파일: $HTML"
+          P=app/src/main
+          mkdir -p $P/java/com/bomin/insulninja $P/assets/vendor/three/build $P/assets/vendor/three/examples/jsm $P/res/drawable $P/res/values
+          npm install --no-save three@0.160.0
+          cp node_modules/three/build/three.module.js $P/assets/vendor/three/build/
+          for d in geometries utils postprocessing shaders; do cp -r node_modules/three/examples/jsm/$d $P/assets/vendor/three/examples/jsm/; done
+          sed 's#https://cdn.jsdelivr.net/npm/three@0.160.0/#./vendor/three/#g' "$HTML" > $P/assets/index.html
+          cat > settings.gradle.kts <<'X'
+          pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
+          dependencyResolutionManagement { repositories { google(); mavenCentral() } }
+          rootProject.name = "InsulNinja"
+          include(":app")
+          X
+          echo 'plugins { id("com.android.application") version "8.5.2" apply false }' > build.gradle.kts
+          printf 'android.useAndroidX=true\norg.gradle.jvmargs=-Xmx2g\n' > gradle.properties
+          cat > app/build.gradle.kts <<'X'
+          plugins { id("com.android.application") }
+          android {
+              namespace = "com.bomin.insulninja"
+              compileSdk = 34
+              defaultConfig {
+                  applicationId = "com.bomin.insulninja"
+                  minSdk = 24
+                  targetSdk = 34
+                  versionCode = (System.getenv("GITHUB_RUN_NUMBER") ?: "1").toInt()
+                  versionName = "1." + (System.getenv("GITHUB_RUN_NUMBER") ?: "0")
+              }
+              buildTypes { getByName("release") { isMinifyEnabled = false; signingConfig = signingConfigs.getByName("debug") } }
+              lint { checkReleaseBuilds = false; abortOnError = false }
+              compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
+          }
+          dependencies { implementation("androidx.webkit:webkit:1.11.0") }
+          X
+          cat > $P/AndroidManifest.xml <<'X'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <uses-permission android:name="android.permission.INTERNET" />
+              <uses-permission android:name="android.permission.VIBRATE" />
+              <application android:label="인술 닌자" android:icon="@drawable/ic_launcher" android:theme="@style/AppTheme" android:hardwareAccelerated="true">
+                  <activity android:name=".MainActivity" android:exported="true" android:screenOrientation="portrait" android:configChanges="orientation|screenSize|keyboardHidden">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          X
+          cat > $P/res/values/styles.xml <<'X'
+          <resources>
+              <style name="AppTheme" parent="android:Theme.Material.NoActionBar.Fullscreen">
+                  <item name="android:windowBackground">@android:color/black</item>
+              </style>
+          </resources>
+          X
+          cat > $P/res/drawable/ic_launcher.xml <<'X'
+          <vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
+              <path android:fillColor="#1B1D4F" android:pathData="M54,2a52,52 0 1,0 0.1,0z" />
+              <path android:fillColor="#2B3190" android:pathData="M54,8a46,46 0 1,0 0.1,0z" />
+              <path android:fillColor="#FFC83A" android:strokeColor="#0C0F3A" android:strokeWidth="2" android:pathData="M54,14L63,45L94,54L63,63L54,94L45,63L14,54L45,45Z" />
+              <path android:fillColor="#1B1D4F" android:pathData="M54,48a6,6 0 1,0 0.1,0z" />
+          </vector>
+          X
+          cat > $P/java/com/bomin/insulninja/MainActivity.java <<'X'
+          package com.bomin.insulninja;
+          import android.app.Activity;
+          import android.os.Bundle;
+          import android.view.View;
+          import android.view.WindowManager;
+          import android.webkit.*;
+          import androidx.webkit.WebViewAssetLoader;
+          public class MainActivity extends Activity {
+              private WebView web;
+              @Override protected void onCreate(Bundle b) {
+                  super.onCreate(b);
+                  getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+                  final WebViewAssetLoader loader = new WebViewAssetLoader.Builder().addPathHandler("/assets/", new WebViewAssetLoader.AssetsPathHandler(this)).build();
+                  web = new WebView(this);
+                  WebSettings s = web.getSettings();
+                  s.setJavaScriptEnabled(true); s.setDomStorageEnabled(true); s.setMediaPlaybackRequiresUserGesture(false);
+                  web.setWebChromeClient(new WebChromeClient());
+                  web.setWebViewClient(new WebViewClient() {
+                      @Override public WebResourceResponse shouldInterceptRequest(WebView v, WebResourceRequest r) { return loader.shouldInterceptRequest(r.getUrl()); }
+                  });
+                  setContentView(web); hideBars();
+                  web.loadUrl("https://appassets.androidplatform.net/assets/index.html");
+              }
+              private void hideBars() {
+                  web.setSystemUiVisibility(View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY | View.SYSTEM_UI_FLAG_FULLSCREEN | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION | View.SYSTEM_UI_FLAG_LAYOUT_STABLE | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN);
+              }
+              @Override public void onWindowFocusChanged(boolean f) { super.onWindowFocusChanged(f); if (f) hideBars(); }
+              @Override protected void onPause() { super.onPause(); web.onPause(); }
+              @Override protected void onResume() { super.onResume(); web.onResume(); }
+              @Override public void onBackPressed() { web.evaluateJavascript("var b=document.getElementById('pauseBtn');b&&b.click()", null); }
+          }
+          X
+      - name: APK 빌드
+        run: gradle assembleRelease --no-daemon && cp app/build/outputs/apk/release/app-release.apk insul-ninja.apk
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ github.run_number }}
+          name: 인술 닌자 v${{ github.run_number }}
+          files: insul-ninja.apk
+          body: insul-ninja.apk를 폰에서 눌러 받아 설치하세요.
